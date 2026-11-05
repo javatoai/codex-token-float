@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -23,14 +24,15 @@ const (
 )
 
 type Snapshot struct {
-	Date           string  `json:"date"`
-	TotalTokens    string  `json:"totalTokens"`
-	FormattedTotal string  `json:"formattedTotal"`
-	FileCount      int     `json:"fileCount"`
-	EventCount     uint64  `json:"eventCount"`
-	UpdatedAt      string  `json:"updatedAt"`
-	Status         Status  `json:"status"`
-	Message        *string `json:"message"`
+	Date           string    `json:"date"`
+	TotalTokens    string    `json:"totalTokens"`
+	FormattedTotal string    `json:"formattedTotal"`
+	FileCount      int       `json:"fileCount"`
+	EventCount     uint64    `json:"eventCount"`
+	UpdatedAt      string    `json:"updatedAt"`
+	Status         Status    `json:"status"`
+	Message        *string   `json:"message"`
+	Breakdown      Breakdown `json:"breakdown"`
 }
 
 func SessionsDir() string {
@@ -43,8 +45,8 @@ func SessionsDir() string {
 
 type Index struct {
 	root  string
-	day   time.Time
 	files map[string]session
+	days  map[string]tally
 }
 
 func NewIndex(root string) *Index {
@@ -54,43 +56,80 @@ func NewIndex(root string) *Index {
 // Scan updates the index and returns a snapshot. A single goroutine owns the index.
 func (i *Index) Scan(now time.Time, rebuild bool) Snapshot {
 	now = now.In(beijing)
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, beijing)
-	dayEnd := dayStart.AddDate(0, 0, 1)
-	if !i.day.Equal(dayStart) {
-		i.day, i.files = dayStart, nil
-	}
-
-	snapshot := Snapshot{Date: now.Format(time.DateOnly), UpdatedAt: now.Format(time.TimeOnly), Status: NoData}
+	date := now.Format(time.DateOnly)
 	files := make(map[string]session, len(i.files))
+	active, activeErrors := i.scanRoot(i.root, files, rebuild)
+	archiveRoot := filepath.Join(filepath.Dir(i.root), "archived_sessions")
+	archived, archiveErrors := i.scanRoot(archiveRoot, files, rebuild)
+	if i.days == nil || filesChanged(i.files, files) {
+		i.days = indexDays(files)
+	}
+	i.files = files
+
+	daily := i.days[date]
+	total := strconv.FormatUint(daily.tokens, 10)
+	snapshot := Snapshot{
+		Date: date, UpdatedAt: now.Format(time.TimeOnly),
+		TotalTokens: total, FormattedTotal: FormatTokens(total),
+		FileCount: len(files), EventCount: daily.events, Status: NoData,
+	}
+	var message string
+	failed := activeErrors + archiveErrors
+	switch {
+	case failed > 0:
+		daily.incomplete = true
+		snapshot.Status = PartialError
+		message = fmt.Sprintf("%d 处日志暂时无法读取，统计有缺口", failed)
+	case !active && !archived:
+		daily.incomplete = true
+		snapshot.Status = MissingDirectory
+		message = "未找到 Codex 会话日志目录"
+	case daily.incomplete:
+		snapshot.Status = PartialError
+		message = "部分用量缺少可靠记录，显示已统计总量"
+	case daily.missingDetails():
+		snapshot.Status = PartialError
+		message = "部分用量缺少分类明细"
+	case daily.events > 0:
+		snapshot.Status = OK
+	}
+	if message != "" {
+		snapshot.Message = &message
+	}
+	snapshot.Breakdown = daily.breakdown()
+	return snapshot
+}
+
+func (i *Index) scanRoot(root string, files map[string]session, rebuild bool) (bool, int) {
+	var available bool
 	var failed int
 	var unreadableDirs []string
-	fs.WalkDir(os.DirFS(i.root), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
+	fs.WalkDir(os.DirFS(root), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if relative == "." && (errors.Is(walkErr, fs.ErrNotExist) || (walkErr == nil && !entry.IsDir())) {
-			message := fmt.Sprintf("未找到 Codex 会话目录：%s", i.root)
-			snapshot.Status, snapshot.Message = MissingDirectory, &message
 			return fs.SkipAll
 		}
+		path := filepath.Join(root, filepath.FromSlash(relative))
 		if walkErr != nil {
 			if !errors.Is(walkErr, fs.ErrNotExist) {
 				failed++
-				unreadableDirs = append(unreadableDirs, relative)
+				unreadableDirs = append(unreadableDirs, path)
 			}
 			return nil
 		}
+		available = true
 		if !entry.Type().IsRegular() || filepath.Ext(relative) != ".jsonl" {
 			return nil
 		}
-		previous := i.files[relative]
+		previous, known := i.files[path]
 		info, err := entry.Info()
 		if err == nil {
-			if info.ModTime().Before(dayStart) {
-				return nil
+			if !known && !rebuild {
+				previous = i.findMovedFile(info)
 			}
-			path := filepath.Join(i.root, filepath.FromSlash(relative))
 			var updated session
-			updated, err = updateSession(path, info, previous, rebuild, dayStart, dayEnd)
+			updated, err = updateSession(path, info, previous, rebuild)
 			if err == nil {
-				files[relative] = updated
+				files[path] = updated
 				return nil
 			}
 		}
@@ -99,50 +138,61 @@ func (i *Index) Scan(now time.Time, rebuild bool) Snapshot {
 		}
 		failed++
 		previous.retry = true
-		files[relative] = previous
+		files[path] = previous
 		return nil
 	})
 	// Keep the last known contributions under a directory we could not inspect.
 	for _, directory := range unreadableDirs {
+		prefix := directory + string(filepath.Separator)
 		for path, previous := range i.files {
-			if _, seen := files[path]; !seen && (directory == "." || strings.HasPrefix(path, directory+"/")) {
+			if _, seen := files[path]; !seen && strings.HasPrefix(path, prefix) {
 				previous.retry = previous.retry || rebuild
 				files[path] = previous
 			}
 		}
 	}
-	i.files = files
-
-	var usage tally
-	for _, file := range files {
-		usage.add(file.visible)
-	}
-	snapshot.FileCount = len(files)
-	snapshot.TotalTokens = strconv.FormatUint(usage.tokens, 10)
-	snapshot.FormattedTotal = groupDigits(snapshot.TotalTokens)
-	snapshot.EventCount = usage.events
-	switch {
-	case failed > 0:
-		message := fmt.Sprintf("%d 处日志暂时无法读取，将在下次刷新时重试", failed)
-		snapshot.Status, snapshot.Message = PartialError, &message
-	case usage.events > 0:
-		snapshot.Status = OK
-	}
-	return snapshot
+	return available, failed
 }
 
-func updateSession(path string, info fs.FileInfo, previous session, rebuild bool, start, end time.Time) (session, error) {
+func filesChanged(previous, current map[string]session) bool {
+	if len(previous) != len(current) {
+		return true
+	}
+	for path, file := range current {
+		if old, exists := previous[path]; !exists || old.summary != file.summary {
+			return true
+		}
+	}
+	return false
+}
+
+func (i *Index) findMovedFile(info fs.FileInfo) session {
+	for _, file := range i.files {
+		if sameFileVersion(file.info, info) {
+			return file
+		}
+	}
+	return session{}
+}
+
+func sameFileVersion(previous, current fs.FileInfo) bool {
+	return previous != nil && current.Size() == previous.Size() &&
+		current.ModTime().Equal(previous.ModTime()) && os.SameFile(previous, current)
+}
+
+func updateSession(path string, info fs.FileInfo, previous session, rebuild bool) (session, error) {
 	if rebuild || previous.retry {
 		previous = session{}
 	}
-	if previous.info != nil && info.Size() == previous.info.Size() &&
-		info.ModTime().Equal(previous.info.ModTime()) && os.SameFile(previous.info, info) {
+	// On Windows, a directory entry can report the old size while a writer
+	// keeps the file open. Verify the version using the open file there.
+	if runtime.GOOS != "windows" && sameFileVersion(previous.info, info) {
 		return previous, nil
 	}
-	return scanFile(path, previous, start, end)
+	return scanFile(path, previous)
 }
 
-func groupDigits(digits string) string {
+func FormatTokens(digits string) string {
 	var result strings.Builder
 	for index, digit := range digits {
 		if index > 0 && (len(digits)-index)%4 == 0 {

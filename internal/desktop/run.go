@@ -17,6 +17,7 @@ const (
 	appName      = "Codex Token Float"
 	windowWidth  = 330
 	windowHeight = 76
+	detailsWidth = 344
 	refreshEvery = 2 * time.Second
 )
 
@@ -24,7 +25,11 @@ type counterWindow struct {
 	window      *mygo.Window
 	anchor      *mygo.Window
 	details     *mygo.Window
+	refresh     chan<- struct{}
 	snapshot    usage.Snapshot
+	animation   countAnimation
+	cardView    bool
+	tapDetails  bool
 	wantDetails bool
 	quitting    bool
 }
@@ -37,12 +42,12 @@ func Run(root string) error {
 		if runtime.GOOS == "darwin" {
 			mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 		}
-		app := &counterWindow{}
+		refresh := make(chan struct{}, 1)
+		app := &counterWindow{refresh: refresh}
 		app.createWindow()
 		_ = app.window.SetIcon(assets.Icon)
 
-		refresh := make(chan struct{}, 1)
-		tray, err := app.createTray(refresh)
+		tray, err := app.createTray()
 		if err != nil {
 			launchErr = fmt.Errorf("无法创建托盘：%w", err)
 			_, _ = mygo.Dialog.Message(mygo.MessageOptions{
@@ -53,7 +58,7 @@ func Run(root string) error {
 		}
 
 		app.details = mygo.NewFlyout(mygo.FlyoutOptions{
-			Parent: app.window, Width: windowWidth, Height: 126, Hidden: true,
+			Parent: app.window, Width: detailsWidth, Height: detailHeight(app.snapshot), Hidden: true,
 			Anchor:    mygo.Rectangle{Width: windowWidth, Height: windowHeight},
 			Placement: mygo.PlacementBottom, Gap: 4, Shadow: true,
 			Content: ui.View(app.renderDetails),
@@ -67,7 +72,7 @@ func Run(root string) error {
 		app.details.OnClose(func(e *mygo.CloseEvent) {
 			if !app.quitting {
 				e.PreventDefault()
-				app.details.Hide()
+				app.hideDetails()
 			}
 		})
 		ctx, cancel := context.WithCancel(context.Background())
@@ -85,8 +90,16 @@ func Run(root string) error {
 				if app.quitting {
 					return
 				}
-				app.snapshot = snapshot
+				oldHeight := detailHeight(app.snapshot)
+				animate := app.window.IsVisible() && !mygo.Theme.Preferences().ReduceMotion
+				app.setSnapshot(snapshot, time.Now(), animate)
 				app.window.SetTitle("北京时间今日 " + app.value() + " tokens")
+				if height := detailHeight(snapshot); height != oldHeight {
+					app.details.SetSize(detailsWidth, height)
+					if app.cardView {
+						app.resizeWindow(detailsWidth, height)
+					}
+				}
 				app.details.Invalidate()
 			})
 		})
@@ -107,6 +120,8 @@ func (app *counterWindow) createWindow() {
 	}
 	if runtime.GOOS != "windows" {
 		app.window = mygo.NewWindow(options)
+		// The saved bounds may be from a card; start in the compact view.
+		app.resizeWindow(windowWidth, windowHeight)
 		return
 	}
 
@@ -128,28 +143,69 @@ func (app *counterWindow) rememberPosition() {
 	}
 }
 
+func (app *counterWindow) resizeWindow(width, height int) {
+	if app.anchor != nil {
+		// SetSize places a flyout at its owner again. Move the owner to
+		// the dragged position first, then let MyGO fit it to the display.
+		app.rememberPosition()
+		app.window.SetSize(width, height)
+		return
+	}
+	b := app.window.Bounds()
+	work := mygo.Screen.DisplayMatching(b).WorkArea
+	b.Width, b.Height = width, height
+	if work.Width > 0 && work.Height > 0 {
+		b.X = max(work.X, min(b.X, work.X+work.Width-width))
+		b.Y = max(work.Y, min(b.Y, work.Y+work.Height-height))
+	}
+	app.window.SetBounds(b)
+}
+
+func (app *counterWindow) setCardView(card bool) {
+	app.window.Update(func() {
+		if app.quitting || app.cardView == card {
+			return
+		}
+		app.cardView = card
+		app.hideDetails()
+		if card {
+			app.resizeWindow(detailsWidth, detailHeight(app.snapshot))
+		} else {
+			app.resizeWindow(windowWidth, windowHeight)
+		}
+	})
+}
+
+func (app *counterWindow) hideDetails() {
+	app.tapDetails, app.wantDetails = false, false
+	app.details.Hide()
+}
+
 func (app *counterWindow) show() {
 	app.window.Show()
 	app.window.Focus()
+	app.window.Invalidate()
 }
 
 func (app *counterWindow) hide() {
+	app.animation = countAnimation{}
 	app.rememberPosition()
-	app.wantDetails = false
-	app.details.Hide()
+	app.hideDetails()
 	app.window.Hide()
 }
 
-func (app *counterWindow) createTray(refresh chan<- struct{}) (*mygo.Tray, error) {
+func (app *counterWindow) requestRefresh() {
+	select {
+	case app.refresh <- struct{}{}:
+	default:
+	}
+}
+
+func (app *counterWindow) createTray() (*mygo.Tray, error) {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "显示悬浮框", Click: func(*mygo.MenuItem, *mygo.Window) { app.show() }},
 		{Label: "隐藏悬浮框", Click: func(*mygo.MenuItem, *mygo.Window) { app.hide() }},
-		{Label: "立即刷新", Click: func(*mygo.MenuItem, *mygo.Window) {
-			select {
-			case refresh <- struct{}{}:
-			default:
-			}
-		}},
+		{Label: "立即刷新", Click: func(*mygo.MenuItem, *mygo.Window) { app.requestRefresh() }},
 		mygo.Separator(),
 		{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 	})

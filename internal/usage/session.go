@@ -6,92 +6,84 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"time"
 )
 
-type tally struct {
-	tokens uint64
-	events uint64
+const (
+	sessionMeta   = "session_meta"
+	responseUsage = "token_usage_record"
+	tokenCount    = "token_count"
+)
+
+type logRecord struct {
+	kind       string
+	at         time.Time
+	threadID   string
+	forked     bool
+	responseID string
+	usage      tokenUsage
 }
 
-func (t *tally) add(other tally) {
-	t.tokens = saturatingAdd(t.tokens, other.tokens)
-	t.events = saturatingAdd(t.events, other.events)
+func (r logRecord) day() string {
+	return r.at.In(beijing).Format(time.DateOnly)
 }
 
-func saturatingAdd(a, b uint64) uint64 {
-	if math.MaxUint64-a < b {
-		return math.MaxUint64
+func parseRecord(line []byte) (logRecord, bool) {
+	if !bytes.Contains(line, []byte(`"session_meta"`)) &&
+		!bytes.Contains(line, []byte(`"token_usage_record"`)) &&
+		!bytes.Contains(line, []byte(`"token_count"`)) {
+		return logRecord{}, false
 	}
-	return a + b
-}
-
-type tokenUsage struct {
-	Total *uint64 `json:"total_tokens"`
-}
-
-type tokenEvent struct {
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
-	Payload   struct {
-		Type string `json:"type"`
-		Info struct {
-			Cumulative tokenUsage `json:"total_token_usage"`
-			Last       tokenUsage `json:"last_token_usage"`
-		} `json:"info"`
-	} `json:"payload"`
-}
-
-type counter struct {
-	previous    uint64
-	hasPrevious bool
-	tally       tally
-}
-
-func (c *counter) count(line []byte, start, end time.Time) {
-	if !bytes.Contains(line, []byte(`"token_count"`)) {
-		return
+	var entry struct {
+		Type      string    `json:"type"`
+		Timestamp time.Time `json:"timestamp"`
+		Payload   struct {
+			Type       string     `json:"type"`
+			ID         string     `json:"id"`
+			ForkedFrom string     `json:"forked_from_id"`
+			ThreadID   string     `json:"thread_id"`
+			ResponseID string     `json:"response_id"`
+			Usage      tokenUsage `json:"usage"`
+			Info       *struct {
+				Cumulative tokenUsage `json:"total_token_usage"`
+			} `json:"info"`
+		} `json:"payload"`
 	}
-	var event tokenEvent
-	if err := json.Unmarshal(line, &event); err != nil || event.Timestamp.IsZero() ||
-		event.Type != "event_msg" || event.Payload.Type != "token_count" {
-		return
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return logRecord{}, false
 	}
-
-	var increment uint64
-	info := event.Payload.Info
-	if info.Cumulative.Total != nil {
-		total := *info.Cumulative.Total
-		increment = total
-		if c.hasPrevious && total >= c.previous {
-			increment -= c.previous
-		}
-		c.previous, c.hasPrevious = total, true
-	} else if info.Last.Total != nil {
-		increment = *info.Last.Total
+	p := entry.Payload
+	if entry.Type == sessionMeta {
+		return logRecord{kind: sessionMeta, threadID: p.ID, forked: p.ForkedFrom != ""}, true
 	}
-
-	if increment > 0 && !event.Timestamp.Before(start) && event.Timestamp.Before(end) {
-		c.tally.add(tally{tokens: increment, events: 1})
+	if entry.Timestamp.IsZero() {
+		return logRecord{}, false
+	}
+	switch {
+	case entry.Type == responseUsage:
+		return logRecord{kind: responseUsage, at: entry.Timestamp, threadID: p.ThreadID, responseID: p.ResponseID, usage: p.Usage}, true
+	case entry.Type == "event_msg" && p.Type == tokenCount && p.Info != nil:
+		return logRecord{kind: tokenCount, at: entry.Timestamp, usage: p.Info.Cumulative}, true
+	default:
+		return logRecord{}, false
 	}
 }
 
 type checkpoint struct {
-	offset int64
-	count  counter
+	offset  int64
+	records []logRecord
 }
 
 type session struct {
 	info    fs.FileInfo
 	tail    []byte
 	cursor  checkpoint
-	visible tally
+	summary *fileSummary
 	retry   bool
 }
 
-func scanFile(path string, previous session, start, end time.Time) (session, error) {
+func scanFile(path string, previous session) (session, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return session{}, err
@@ -103,6 +95,9 @@ func scanFile(path string, previous session, start, end time.Time) (session, err
 	}
 	if !info.Mode().IsRegular() {
 		return session{}, fs.ErrInvalid
+	}
+	if sameFileVersion(previous.info, info) {
+		return previous, nil
 	}
 	size := info.Size()
 	var cursor checkpoint
@@ -120,24 +115,35 @@ func scanFile(path string, previous session, start, end time.Time) (session, err
 	if err != nil {
 		return session{}, err
 	}
+	cursor, summary, err := readRecords(file, size, cursor)
+	if err != nil {
+		return session{}, err
+	}
+	return session{info: info, tail: tail, cursor: cursor, summary: summary}, nil
+}
 
+func readRecords(file io.ReaderAt, size int64, cursor checkpoint) (checkpoint, *fileSummary, error) {
 	reader := bufio.NewReader(io.NewSectionReader(file, cursor.offset, size-cursor.offset))
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err == io.EOF {
 			if cursor.offset+int64(len(line)) != size {
-				return session{}, io.ErrUnexpectedEOF
+				return checkpoint{}, nil, io.ErrUnexpectedEOF
 			}
-			// A valid line without a newline is visible immediately. Keep its
-			// start as the checkpoint so the next append can finish that line.
-			visible := cursor.count
-			visible.count(line, start, end)
-			return session{info: info, tail: tail, cursor: cursor, visible: visible.tally}, nil
+			// Show a valid final line immediately, but keep its start as the
+			// checkpoint. The next append can complete or replace that line.
+			visible := cursor.records
+			if record, ok := parseRecord(line); ok {
+				visible = append(visible[:len(visible):len(visible)], record)
+			}
+			return cursor, summarizeSession(visible), nil
 		}
 		if err != nil {
-			return session{}, err
+			return checkpoint{}, nil, err
 		}
-		cursor.count.count(line, start, end)
+		if record, ok := parseRecord(line); ok {
+			cursor.records = append(cursor.records, record)
+		}
 		cursor.offset += int64(len(line))
 	}
 }
