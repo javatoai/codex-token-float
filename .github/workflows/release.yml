@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  check-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check release version
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("mygo.json"))["version"])')
+          if [[ "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "v$version" ]]; then
+            printf 'Expected tag v%s, got %s\n' "$version" "$GITHUB_REF" >&2
+            exit 1
+          fi
+
+  build:
+    needs: check-tag
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: Codex-Token-Float-*
+      - name: Verify release files
+        run: |
+          mkdir release
+          version=${GITHUB_REF_NAME#v}
+          for platform in windows-x64 macos-arm64 macos-x64; do
+            artifact="artifacts/Codex-Token-Float-$platform"
+            archive="Codex-Token-Float-$version-$platform.zip"
+            (cd "$artifact" && sha256sum --check --strict SHA256SUMS.txt)
+            cp -- "$artifact/$archive" release/
+          done
+          (cd release && sha256sum -- *.zip > SHA256SUMS.txt)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" == false ]]; then
+              echo "Release $GITHUB_REF_NAME is already published."
+              exit 0
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "Codex Token Float $GITHUB_REF_NAME" --notes-from-tag
+          fi
+          gh release upload "$GITHUB_REF_NAME" release/*.zip release/SHA256SUMS.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

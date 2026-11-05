@@ -4,7 +4,7 @@ Codex Token Float 是一个桌面悬浮计数器。使用 Codex 时，抬眼就�
 
 ## 下载与打开
 
-打开 [便携版下载页](https://github.com/javatoai/codex-token-float/actions/workflows/build.yml?query=branch%3Amaster)，进入最近一条带绿色勾选的记录，在页面底部的 **Artifacts** 区域下载对应版本并解压。
+打开 [便携版下载页](https://github.com/javatoai/codex-token-float/releases/latest)，选择对应电脑的压缩包并解压。
 
 - **Windows x64** 双击解压后的 `codex-token-float.exe`。
 - **macOS 13 或更新版本** 按电脑选择 Apple 芯片版或 Intel 芯片版，将「Codex Token Float」拖到「应用程序」后打开。
