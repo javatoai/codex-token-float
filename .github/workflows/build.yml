@@ -1,0 +1,49 @@
+name: Native build
+
+on:
+  push:
+    branches: [master, "codex/mygo-rewrite"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows/amd64
+            label: windows-x64
+          - os: macos-latest
+            target: darwin/arm64
+            label: macos-arm64
+          - os: macos-latest
+            target: darwin/amd64
+            label: macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        shell: bash
+        run: |
+          changes=$(gofmt -l ./assets ./cmd ./internal)
+          if [ -n "$changes" ]; then
+            printf '%s\n' "$changes"
+            exit 1
+          fi
+      - run: go test ./...
+      - run: go vet ./...
+      - run: python scripts/package.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Codex-Token-Float-${{ matrix.label }}
+          path: dist/${{ matrix.label }}/*
+          if-no-files-found: error

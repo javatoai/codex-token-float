@@ -1,0 +1,9 @@
+{
+  "name": "Codex Token Float",
+  "identifier": "com.javatoai.codex-token-float",
+  "version": "0.2.0",
+  "main": "./cmd/codex-token-float",
+  "icon": "assets/icon.png",
+  "out": "dist/native",
+  "macos": {"minimumSystemVersion": "13.0"}
+}
