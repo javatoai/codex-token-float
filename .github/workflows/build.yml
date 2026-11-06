@@ -64,8 +64,8 @@ jobs:
           hdiutil attach dist/macos-universal/*.dmg -readonly -nobrowse -noautoopen -mountpoint "$mount"
           app="$mount/Codex Token Float.app"
           binary="$app/Contents/MacOS/Codex Token Float"
-          lipo -archs "$binary"
-          lipo -verify_arch arm64 x86_64 "$binary"
+          lipo "$binary" -archs
+          lipo "$binary" -verify_arch arm64 x86_64
           codesign --verify --strict --deep --all-architectures --verbose=2 "$app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = '13.0'
           "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
