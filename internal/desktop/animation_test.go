@@ -92,6 +92,43 @@ func TestSnapshotAnimationSnapsWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestDetailAnimationRetargetsAndSnaps(t *testing.T) {
+	now := time.Unix(100, 0)
+	snapshot := countSnapshot("2026-11-05", 1000)
+	snapshot.Breakdown.OutputTokens = new("100")
+	app := &counterWindow{snapshot: snapshot}
+
+	snapshot.Breakdown.OutputTokens = new("200")
+	app.setSnapshot(snapshot, now, true)
+	retargetAt := now.Add(150 * time.Millisecond)
+	middle, moving := app.detailAnimations[detailOutput].valueAt(retargetAt)
+	if !moving || middle <= 100 || middle >= 200 {
+		t.Fatalf("expected an intermediate output count, got %d (moving %v)", middle, moving)
+	}
+	snapshot.Breakdown.OutputTokens = new("300")
+	app.setSnapshot(snapshot, retargetAt, true)
+	if value, active := app.detailAnimations[detailOutput].valueAt(retargetAt); !active || value != middle {
+		t.Fatalf("retargeted output started at %d (moving %v), want %d", value, active, middle)
+	}
+
+	for _, value := range []*string{new("301"), new("250"), nil, new("400"), new("401")} {
+		snapshot.Breakdown.OutputTokens = value
+		app.setSnapshot(snapshot, retargetAt, true)
+		if _, active := app.detailAnimations[detailOutput].valueAt(retargetAt); active {
+			t.Fatalf("expected an immediate display for output value %v", value)
+		}
+	}
+
+	snapshot.Breakdown.OutputTokens = new("500")
+	app.setSnapshot(snapshot, retargetAt, true)
+	snapshot.Date = "2026-11-06"
+	snapshot.Breakdown.OutputTokens = new("600")
+	app.setSnapshot(snapshot, retargetAt, true)
+	if _, active := app.detailAnimations[detailOutput].valueAt(retargetAt); active {
+		t.Fatal("the first count of a new day must display immediately")
+	}
+}
+
 func countSnapshot(date string, tokens uint64) usage.Snapshot {
 	digits := strconv.FormatUint(tokens, 10)
 	return usage.Snapshot{Date: date, Status: usage.OK, TotalTokens: digits, FormattedTotal: usage.FormatTokens(digits)}

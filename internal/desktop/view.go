@@ -16,26 +16,49 @@ func (app *counterWindow) value() string {
 	return app.snapshot.FormattedTotal
 }
 
-func (app *counterWindow) displayedValue(c *ui.Context, window *mygo.Window) string {
-	value, moving := app.animation.valueAt(c.Now())
-	if !moving {
-		return app.value()
+type renderedCounts struct {
+	total   string
+	details [detailCount]string
+}
+
+func (app *counterWindow) countsForView(c *ui.Context, window *mygo.Window, withDetails bool) renderedCounts {
+	reduced := c.Preferences().ReduceMotion
+	if reduced {
+		app.resetAnimations()
 	}
-	if c.Preferences().ReduceMotion {
-		app.animation = countAnimation{}
-		return app.value()
+	animate := !reduced && (window == nil || window.IsVisible())
+	now := c.Now()
+	moving := false
+	display := func(animation countAnimation, exact string) string {
+		if animate {
+			if value, active := animation.valueAt(now); active {
+				moving = true
+				return usage.FormatTokens(strconv.FormatUint(value, 10))
+			}
+		}
+		return exact
 	}
-	if window != nil && !window.IsVisible() {
-		return app.value()
+
+	counts := renderedCounts{total: display(app.animation, app.value())}
+	if withDetails {
+		for i, value := range detailValues(app.snapshot.Breakdown) {
+			if value == nil {
+				counts.details[i] = "—"
+			} else {
+				counts.details[i] = display(app.detailAnimations[i], usage.FormatTokens(*value))
+			}
+		}
 	}
-	c.AnimationFrame()
-	return usage.FormatTokens(strconv.FormatUint(value, 10))
+	if moving {
+		c.AnimationFrame()
+	}
+	return counts
 }
 
 func (app *counterWindow) render(c *ui.Context) {
-	value := app.displayedValue(c, app.window)
+	counts := app.countsForView(c, app.window, app.cardView)
 	if app.cardView {
-		app.detailsCard(c, value).DragWindow().ContextMenu(app.viewMenu)
+		app.detailsCard(c, counts).DragWindow().ContextMenu(app.viewMenu)
 		return
 	}
 
@@ -60,7 +83,7 @@ func (app *counterWindow) render(c *ui.Context) {
 		if today.Clicked() {
 			app.tapDetails = !app.tapDetails
 		}
-		ui.Text(c, value).Width(valueWidth).TextAlign(ui.End).
+		ui.Text(c, counts.total).Width(valueWidth).TextAlign(ui.End).
 			FontSize(fontSize).FontWeight(valueWeight).FontFeatures(digitFeatures).TextColor(valueColor)
 		ui.Text(c, "tokens").FontSize(labelSize).FontWeight(600).TextColor(labelColor).Translate(0, labelOffset)
 	})
@@ -99,10 +122,10 @@ func (app *counterWindow) viewMenu(m *ui.Menu) {
 }
 
 func (app *counterWindow) renderDetails(c *ui.Context) {
-	app.detailsCard(c, app.displayedValue(c, app.details))
+	app.detailsCard(c, app.countsForView(c, app.details, true))
 }
 
-func (app *counterWindow) detailsCard(c *ui.Context, value string) ui.Element {
+func (app *counterWindow) detailsCard(c *ui.Context, counts renderedCounts) ui.Element {
 	snapshot := app.snapshot
 	theme := c.Theme()
 	c.Root().Background(theme.Surface)
@@ -122,21 +145,21 @@ func (app *counterWindow) detailsCard(c *ui.Context, value string) ui.Element {
 				ui.Text(c, "今日总 Token").FontWeight(600)
 				ui.Text(c, "缓存命中率 "+rate).FontFeatures("tnum").TextColor(theme.TextMuted)
 			})
-			ui.Text(c, value).FontSize(24).FontWeight(700).FontFeatures("tnum")
+			ui.Text(c, counts.total).FontSize(24).FontWeight(700).FontFeatures("tnum")
 		})
 		ui.Box(c).Height(1).Background(theme.Border)
 		ui.Column(c).Gap(4).Children(func() {
-			detailLine(c, "输入总量", breakdown.InputTokens, 0)
-			detailLine(c, "命中缓存", breakdown.CachedInputTokens, 12)
-			detailLine(c, "未命中输入", breakdown.UncachedInputTokens, 12)
+			detailLine(c, "输入总量", counts.details[detailInput], 0)
+			detailLine(c, "命中缓存", counts.details[detailCached], 12)
+			detailLine(c, "未命中输入", counts.details[detailUncached], 12)
 			if hasCacheWrites(breakdown) {
-				detailLine(c, "其中写入缓存", breakdown.CacheWriteInputTokens, 24)
+				detailLine(c, "其中写入缓存", counts.details[detailCacheWrite], 24)
 			}
 		})
 		ui.Column(c).Gap(4).Children(func() {
-			detailLine(c, "输出总量", breakdown.OutputTokens, 0)
-			detailLine(c, "其中推理", breakdown.ReasoningOutputTokens, 12)
-			detailLine(c, "非推理输出", breakdown.NonReasoningOutputTokens, 12)
+			detailLine(c, "输出总量", counts.details[detailOutput], 0)
+			detailLine(c, "其中推理", counts.details[detailReasoning], 12)
+			detailLine(c, "非推理输出", counts.details[detailNonReasoning], 12)
 		})
 		if snapshot.Message != nil {
 			ui.Box(c).Height(1).Background(theme.Border)
@@ -145,11 +168,7 @@ func (app *counterWindow) detailsCard(c *ui.Context, value string) ui.Element {
 	})
 }
 
-func detailLine(c *ui.Context, label string, count *string, indent float32) {
-	value := "—"
-	if count != nil {
-		value = usage.FormatTokens(*count)
-	}
+func detailLine(c *ui.Context, label, value string, indent float32) {
 	row := ui.Row(c).Justify(ui.SpaceBetween).Gap(8).Padding(0, 0, 0, indent)
 	if indent == 0 {
 		row.FontWeight(600)

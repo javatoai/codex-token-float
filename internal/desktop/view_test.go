@@ -55,3 +55,74 @@ func TestDetailsFitAtHighDPI(t *testing.T) {
 		t.Fatalf("unexpected rows with zero cache writes and unknown rate: %v", preview.Texts())
 	}
 }
+
+func TestDetailViewsAnimateWhenTotalIsUnchanged(t *testing.T) {
+	for _, card := range []bool{false, true} {
+		name := "hover"
+		if card {
+			name = "card"
+		}
+		t.Run(name, func(t *testing.T) {
+			snapshot := countSnapshot("2026-11-05", 20000)
+			snapshot.Breakdown = usage.Breakdown{
+				InputTokens: new("9900"), CachedInputTokens: new("8000"), UncachedInputTokens: new("1900"),
+				CacheWriteInputTokens: new("200"), OutputTokens: new("4100"),
+				ReasoningOutputTokens: new("2300"), NonReasoningOutputTokens: new("1800"),
+			}
+			app := &counterWindow{snapshot: snapshot, cardView: card}
+			view := app.renderDetails
+			if card {
+				view = app.render
+			}
+			preview := ui.NewTester(view, detailsWidth, detailHeight(snapshot))
+			preview.SetScale(1.5)
+			input, ok := preview.Find("9900")
+			if !ok {
+				t.Fatal("initial input count is missing")
+			}
+
+			snapshot.Breakdown = usage.Breakdown{
+				InputTokens: new("10020"), CachedInputTokens: new("8080"), UncachedInputTokens: new("1940"),
+				CacheWriteInputTokens: new("360"), OutputTokens: new("4180"),
+				ReasoningOutputTokens: new("2340"), NonReasoningOutputTokens: new("1840"),
+				CacheHitRatePercent: new("80.64"),
+			}
+			app.setSnapshot(snapshot, preview.Now(), true)
+			preview.Frame()
+			if !preview.FramePending() {
+				t.Fatal("a detail-only update must request animation frames")
+			}
+
+			preview.Advance(countDuration / 2)
+			preview.Frame()
+			for _, value := range []string{"1,0005", "8070", "1935", "340", "4170", "2335", "1835", "2,0000", "缓存命中率 80.64%"} {
+				if !preview.HasText(value) {
+					t.Errorf("missing midpoint text %q", value)
+				}
+			}
+			midpoint, ok := preview.Find("1,0005")
+			if delta := midpoint.X + midpoint.W - input.X - input.W; !ok || delta < -0.5 || delta > 0.5 {
+				t.Errorf("input count moved its right edge on carry: before %+v, during %+v", input, midpoint)
+			}
+
+			preview.Advance(countDuration / 2)
+			preview.Frame()
+			for _, value := range []string{"1,0020", "8080", "1940", "360", "4180", "2340", "1840"} {
+				if !preview.HasText(value) {
+					t.Errorf("missing final count %q", value)
+				}
+			}
+			if preview.FramePending() {
+				t.Error("settled counts should stop requesting frames")
+			}
+
+			snapshot.Breakdown.InputTokens = new("10200")
+			app.setSnapshot(snapshot, preview.Now(), true)
+			preview.Frame()
+			preview.SetPreferences(ui.Preferences{ReduceMotion: true})
+			if !preview.HasText("1,0200") || preview.FramePending() {
+				t.Error("reduced motion must settle the count and stop requesting frames")
+			}
+		})
+	}
+}

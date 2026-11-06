@@ -20,12 +20,11 @@ jobs:
           - os: windows-latest
             target: windows/amd64
             label: windows-x64
+            extension: exe
           - os: macos-latest
-            target: darwin/arm64
-            label: macos-arm64
-          - os: macos-latest
-            target: darwin/amd64
-            label: macos-x64
+            target: darwin/universal
+            label: macos-universal
+            extension: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -43,8 +42,40 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: python scripts/package.py --target ${{ matrix.target }}
+      - name: Verify Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-Item 'dist/windows-x64/*.exe'
+          $licenses = Join-Path $env:RUNNER_TEMP 'licenses.txt'
+          $process = Start-Process $exe.FullName -ArgumentList '--licenses' -WindowStyle Hidden -RedirectStandardOutput $licenses -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Could not run the portable EXE' }
+          foreach ($header in 'Codex Token Float / LICENSE', 'Go / LICENSE', 'github.com/egoist/mygo / LICENSE') {
+            if (!(Select-String -LiteralPath $licenses -SimpleMatch -Quiet $header)) {
+              throw "Missing embedded notice for $header"
+            }
+          }
+      - name: Verify macOS disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mount=$(mktemp -d)
+          trap 'hdiutil detach "$mount"; rmdir "$mount"' EXIT
+          hdiutil attach dist/macos-universal/*.dmg -readonly -nobrowse -noautoopen -mountpoint "$mount"
+          app="$mount/Codex Token Float.app"
+          binary="$app/Contents/MacOS/Codex Token Float"
+          lipo -archs "$binary"
+          lipo -verify_arch arm64 x86_64 "$binary"
+          codesign --verify --strict --deep --all-architectures --verbose=2 "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = '13.0'
+          "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
+          for header in 'Codex Token Float / LICENSE' 'Go / LICENSE' 'github.com/egoist/mygo / LICENSE'; do
+            grep -Fx "$header" "$RUNNER_TEMP/licenses.txt"
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: Codex-Token-Float-${{ matrix.label }}
-          path: dist/${{ matrix.label }}/*
+          path: |
+            dist/${{ matrix.label }}/*.${{ matrix.extension }}
+            dist/${{ matrix.label }}/SHA256SUMS.txt
           if-no-files-found: error

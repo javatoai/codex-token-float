@@ -22,16 +22,17 @@ const (
 )
 
 type counterWindow struct {
-	window      *mygo.Window
-	anchor      *mygo.Window
-	details     *mygo.Window
-	refresh     chan<- struct{}
-	snapshot    usage.Snapshot
-	animation   countAnimation
-	cardView    bool
-	tapDetails  bool
-	wantDetails bool
-	quitting    bool
+	window           *mygo.Window
+	anchor           *mygo.Window
+	details          *mygo.Window
+	refresh          chan<- struct{}
+	snapshot         usage.Snapshot
+	animation        countAnimation
+	detailAnimations [detailCount]countAnimation
+	cardView         bool
+	tapDetails       bool
+	wantDetails      bool
+	quitting         bool
 }
 
 func Run(root string) error {
@@ -188,7 +189,7 @@ func (app *counterWindow) show() {
 }
 
 func (app *counterWindow) hide() {
-	app.animation = countAnimation{}
+	app.resetAnimations()
 	app.rememberPosition()
 	app.hideDetails()
 	app.window.Hide()
