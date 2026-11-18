@@ -4,23 +4,27 @@ Codex Token Float 是一个桌面悬浮计数器。使用 Codex 时，抬眼就�
 
 ## 下载与打开
 
-- **Windows x64** 下载便携版 `.exe`，双击即可打开。 [下载 Windows 版](https://github.com/javatoai/codex-token-float/releases/download/v0.2.1/Codex-Token-Float-0.2.1-windows-x64.exe)
-- **macOS 13 或更新版本** Apple 芯片和 Intel 芯片使用同一个 `.dmg`。打开后把「Codex Token Float」拖到「应用程序」。 [下载 Mac 版](https://github.com/javatoai/codex-token-float/releases/download/v0.2.1/Codex-Token-Float-0.2.1-macos-universal.dmg)
+- **Windows x64** 下载便携版 `.exe`，双击即可打开。 [下载 Windows 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.0/Codex-Token-Float-0.3.0-windows-x64.exe)
+- **macOS 13 或更新版本** Apple 芯片和 Intel 芯片使用同一个 `.dmg`。打开后把「Codex Token Float」拖到「应用程序」。 [下载 Mac 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.0/Codex-Token-Float-0.3.0-macos-universal.dmg)
 
 ## 日常使用
 
 - **弹框视图** 平时只显示今日总量。鼠标悬停或轻点「今日」，可在下方展开明细。
-- **卡片视图** 常驻显示完整的用量明细。
-- 右键悬浮窗可切换视图或立即刷新。窗口始终置顶，可以拖到顺手的位置，下次打开时会恢复。
+- **卡片视图（启动默认）** 常驻显示今日 Token、API 金额估算和完整的用量明细。
+- 右键悬浮窗可切换视图、显示或隐藏美元金额、选择每 1 秒、2 秒或 5 秒刷新，也可以立即刷新。刷新频率和美元显示状态会保留到下次启动。
+- 右键选择「模型单价」可以查看费用估算所用的价目表，单位为美元／百万 Token。
+- 窗口始终置顶，可以拖到顺手的位置，下次打开时会恢复。
 - 从 Windows 托盘或 Mac 菜单栏的应用图标，可显示、隐藏、立即刷新或退出。
+- 程序运行期间重复打开时，继续使用已有浮窗。
 
 ## 看懂用量
 
 | 显示项 | 含义 |
 | --- | --- |
 | 今日总 Token | 当天的输入和输出总用量，按四位分组显示，例如 `1,2345,6789`。 |
+| 美元金额 | 今日本地 Codex 用量的 API 费用估算，包含订阅内使用。明细的中间列按每条用量对应的模型单价汇总。部分用量无法计价时标为「部分」。 |
 | 输入总量 | 包含命中缓存和未命中输入。有缓存写入用量时会单独列出。 |
 | 输出总量 | 分别列出推理和非推理输出。 |
 | 缓存命中率 | 命中缓存的 Token 占输入总量的比例，保留两位小数。 |
 
-用量按北京时间划分，每两秒检查一次。有新的用量记录时，数字会平滑递增。统计在本机完成，记录有缺口时会在明细中提示。
+用量按北京时间划分，默认每两秒检查一次并显示美元金额。有新的用量记录时，数字会平滑递增。统计在本机完成，记录有缺口时会在明细中提示。

@@ -7,11 +7,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
 	sessionMeta   = "session_meta"
+	turnContext   = "turn_context"
 	responseUsage = "token_usage_record"
 	tokenCount    = "token_count"
 )
@@ -20,6 +22,8 @@ type logRecord struct {
 	kind       string
 	at         time.Time
 	threadID   string
+	turnID     string
+	model      string
 	forked     bool
 	responseID string
 	usage      tokenUsage
@@ -32,7 +36,8 @@ func (r logRecord) day() string {
 func parseRecord(line []byte) (logRecord, bool) {
 	if !bytes.Contains(line, []byte(`"session_meta"`)) &&
 		!bytes.Contains(line, []byte(`"token_usage_record"`)) &&
-		!bytes.Contains(line, []byte(`"token_count"`)) {
+		!bytes.Contains(line, []byte(`"token_count"`)) &&
+		!bytes.Contains(line, []byte(`"turn_context"`)) {
 		return logRecord{}, false
 	}
 	var entry struct {
@@ -43,6 +48,8 @@ func parseRecord(line []byte) (logRecord, bool) {
 			ID         string     `json:"id"`
 			ForkedFrom string     `json:"forked_from_id"`
 			ThreadID   string     `json:"thread_id"`
+			TurnID     string     `json:"turn_id"`
+			Model      string     `json:"model"`
 			ResponseID string     `json:"response_id"`
 			Usage      tokenUsage `json:"usage"`
 			Info       *struct {
@@ -57,12 +64,19 @@ func parseRecord(line []byte) (logRecord, bool) {
 	if entry.Type == sessionMeta {
 		return logRecord{kind: sessionMeta, threadID: p.ID, forked: p.ForkedFrom != ""}, true
 	}
+	if entry.Type == turnContext {
+		model := strings.ToLower(strings.TrimSpace(p.Model))
+		return logRecord{kind: turnContext, turnID: p.TurnID, model: model}, p.TurnID != "" && model != ""
+	}
 	if entry.Timestamp.IsZero() {
 		return logRecord{}, false
 	}
 	switch {
 	case entry.Type == responseUsage:
-		return logRecord{kind: responseUsage, at: entry.Timestamp, threadID: p.ThreadID, responseID: p.ResponseID, usage: p.Usage}, true
+		return logRecord{
+			kind: responseUsage, at: entry.Timestamp, threadID: p.ThreadID,
+			turnID: p.TurnID, responseID: p.ResponseID, usage: p.Usage,
+		}, true
 	case entry.Type == "event_msg" && p.Type == tokenCount && p.Info != nil:
 		return logRecord{kind: tokenCount, at: entry.Timestamp, usage: p.Info.Cumulative}, true
 	default:

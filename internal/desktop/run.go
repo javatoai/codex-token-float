@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -18,14 +19,17 @@ const (
 	windowWidth  = 330
 	windowHeight = 76
 	detailsWidth = 344
-	refreshEvery = 2 * time.Second
 )
 
 type counterWindow struct {
 	window           *mygo.Window
 	anchor           *mygo.Window
 	details          *mygo.Window
+	priceWindow      *mygo.Window
 	refresh          chan<- struct{}
+	intervalChanges  chan time.Duration
+	settingsPath     string
+	settings         desktopSettings
 	snapshot         usage.Snapshot
 	animation        countAnimation
 	detailAnimations [detailCount]countAnimation
@@ -37,6 +41,21 @@ type counterWindow struct {
 
 func Run(root string) error {
 	mygo.App.SetName(appName)
+	dataDir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		return fmt.Errorf("无法获取应用数据目录：%w", err)
+	}
+	release, err := tryInstanceLock(filepath.Join(dataDir, "instance.lock"))
+	if err != nil {
+		return fmt.Errorf("无法锁定应用实例：%w", err)
+	}
+	if release == nil {
+		return nil
+	}
+	defer release()
+
+	settingsPath := filepath.Join(dataDir, "settings.json")
+	settings := loadSettings(settingsPath)
 	mygo.App.SetLanguages("zh-Hans")
 	var launchErr error
 	mygo.App.WhenReady(func() {
@@ -44,7 +63,11 @@ func Run(root string) error {
 			mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 		}
 		refresh := make(chan struct{}, 1)
-		app := &counterWindow{refresh: refresh}
+		intervalChanges := make(chan time.Duration, 1)
+		app := &counterWindow{
+			refresh: refresh, intervalChanges: intervalChanges, cardView: true,
+			settingsPath: settingsPath, settings: settings,
+		}
 		app.createWindow()
 		_ = app.window.SetIcon(assets.Icon)
 
@@ -58,8 +81,9 @@ func Run(root string) error {
 			return
 		}
 
+		width, height := app.detailSize()
 		app.details = mygo.NewFlyout(mygo.FlyoutOptions{
-			Parent: app.window, Width: detailsWidth, Height: detailHeight(app.snapshot), Hidden: true,
+			Parent: app.window, Width: width, Height: height, Hidden: true,
 			Anchor:    mygo.Rectangle{Width: windowWidth, Height: windowHeight},
 			Placement: mygo.PlacementBottom, Gap: 4, Shadow: true,
 			Content: ui.View(app.renderDetails),
@@ -86,43 +110,59 @@ func Run(root string) error {
 			tray.Destroy()
 		})
 		app.window.Show()
-		go monitor(ctx, root, refresh, func(snapshot usage.Snapshot) {
+		go monitor(ctx, root, settings.interval(), intervalChanges, refresh, func(snapshot usage.Snapshot) {
 			app.window.Update(func() {
 				if app.quitting {
 					return
 				}
-				oldHeight := detailHeight(app.snapshot)
+				oldWidth, oldHeight := app.detailSize()
 				animate := app.window.IsVisible() && !mygo.Theme.Preferences().ReduceMotion
 				app.setSnapshot(snapshot, time.Now(), animate)
 				app.window.SetTitle("北京时间今日 " + app.value() + " tokens")
-				if height := detailHeight(snapshot); height != oldHeight {
-					app.details.SetSize(detailsWidth, height)
-					if app.cardView {
-						app.resizeWindow(detailsWidth, height)
-					}
-				}
-				app.details.Invalidate()
+				app.updateDetails(oldWidth, oldHeight)
 			})
 		})
 	})
-	err := mygo.App.Run()
+	err = mygo.App.Run()
 	if launchErr != nil {
 		return launchErr
 	}
 	return err
 }
 
+func (app *counterWindow) windowSize() (int, int) {
+	if app.cardView {
+		return app.detailSize()
+	}
+	return windowWidth, windowHeight
+}
+
+func (app *counterWindow) detailSize() (int, int) {
+	return detailWidth(app.snapshot, app.settings.ShowUSD), detailHeight(app.snapshot)
+}
+
+func (app *counterWindow) updateDetails(oldWidth, oldHeight int) {
+	width, height := app.detailSize()
+	if width != oldWidth || height != oldHeight {
+		app.details.SetSize(width, height)
+		if app.cardView {
+			app.resizeWindow(width, height)
+		}
+	}
+	app.details.Invalidate()
+}
+
 func (app *counterWindow) createWindow() {
+	width, height := app.windowSize()
 	options := mygo.WindowOptions{
-		Title: appName, Width: windowWidth, Height: windowHeight, StateKey: "main",
+		Title: appName, Width: width, Height: height, StateKey: "main",
 		Frameless: true, Transparent: true, DisableShadow: true, AlwaysOnTop: true,
 		DisableResize: true, DisableMinimize: true, DisableMaximize: true, DisableFullScreen: true,
 		SkipTaskbar: true, Hidden: true, Content: ui.View(app.render),
 	}
 	if runtime.GOOS != "windows" {
 		app.window = mygo.NewWindow(options)
-		// The saved bounds may be from a card; start in the compact view.
-		app.resizeWindow(windowWidth, windowHeight)
+		app.resizeWindow(width, height)
 		return
 	}
 
@@ -131,7 +171,7 @@ func (app *counterWindow) createWindow() {
 	options.Content = ui.View(func(*ui.Context) {})
 	app.anchor = mygo.NewWindow(options)
 	app.window = mygo.NewFlyout(mygo.FlyoutOptions{
-		Parent: app.anchor, Width: windowWidth, Height: windowHeight,
+		Parent: app.anchor, Width: width, Height: height,
 		Hidden: true, Content: ui.View(app.render),
 	})
 	app.window.SetAlwaysOnTop(true)
@@ -169,11 +209,7 @@ func (app *counterWindow) setCardView(card bool) {
 		}
 		app.cardView = card
 		app.hideDetails()
-		if card {
-			app.resizeWindow(detailsWidth, detailHeight(app.snapshot))
-		} else {
-			app.resizeWindow(windowWidth, windowHeight)
-		}
+		app.resizeWindow(app.windowSize())
 	})
 }
 
@@ -202,6 +238,39 @@ func (app *counterWindow) requestRefresh() {
 	}
 }
 
+func (app *counterWindow) changeSettings(change func(*desktopSettings)) {
+	app.window.Update(func() {
+		if app.quitting {
+			return
+		}
+		previous := app.settings
+		next := previous
+		change(&next)
+		if next == previous {
+			return
+		}
+		if err := saveSettings(app.settingsPath, next); err != nil {
+			_, _ = mygo.Dialog.Message(mygo.MessageOptions{
+				Type: mygo.MessageWarning, Title: appName, Message: "无法保存设置", Detail: err.Error(),
+			})
+			return
+		}
+		oldWidth, oldHeight := app.detailSize()
+		app.settings = next
+		if next.RefreshSeconds != previous.RefreshSeconds {
+			// A newer choice supersedes an interval queued during a scan.
+			select {
+			case <-app.intervalChanges:
+			default:
+			}
+			app.intervalChanges <- next.interval()
+		}
+		if next.ShowUSD != previous.ShowUSD {
+			app.updateDetails(oldWidth, oldHeight)
+		}
+	})
+}
+
 func (app *counterWindow) createTray() (*mygo.Tray, error) {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "显示悬浮框", Click: func(*mygo.MenuItem, *mygo.Window) { app.show() }},
@@ -217,16 +286,19 @@ func (app *counterWindow) createTray() (*mygo.Tray, error) {
 	return tray, err
 }
 
-func monitor(ctx context.Context, root string, refresh <-chan struct{}, publish func(usage.Snapshot)) {
+func monitor(ctx context.Context, root string, interval time.Duration, intervalChanges <-chan time.Duration, refresh <-chan struct{}, publish func(usage.Snapshot)) {
 	index := usage.NewIndex(root)
-	ticker := time.NewTicker(refreshEvery)
-	defer ticker.Stop()
 	publish(index.Scan(time.Now(), false))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		rebuild := false
 		select {
 		case <-ctx.Done():
 			return
+		case interval := <-intervalChanges:
+			ticker.Reset(interval)
+			continue
 		case <-ticker.C:
 		case <-refresh:
 			rebuild = true

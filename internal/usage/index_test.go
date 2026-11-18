@@ -146,6 +146,7 @@ func TestLegacyUsesOnlyConfirmedIncrements(t *testing.T) {
 	if snapshot.Message == nil || snapshot.Breakdown.CacheHitRatePercent != nil {
 		t.Fatalf("expected a visible gap, got %+v", snapshot)
 	}
+	assertAPICost(t, snapshot, "", true)
 }
 
 func TestArchiveMovePreservesUsage(t *testing.T) {

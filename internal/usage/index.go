@@ -24,15 +24,17 @@ const (
 )
 
 type Snapshot struct {
-	Date           string    `json:"date"`
-	TotalTokens    string    `json:"totalTokens"`
-	FormattedTotal string    `json:"formattedTotal"`
-	FileCount      int       `json:"fileCount"`
-	EventCount     uint64    `json:"eventCount"`
-	UpdatedAt      string    `json:"updatedAt"`
-	Status         Status    `json:"status"`
-	Message        *string   `json:"message"`
-	Breakdown      Breakdown `json:"breakdown"`
+	Date             string           `json:"date"`
+	TotalTokens      string           `json:"totalTokens"`
+	FormattedTotal   string           `json:"formattedTotal"`
+	FileCount        int              `json:"fileCount"`
+	EventCount       uint64           `json:"eventCount"`
+	UpdatedAt        string           `json:"updatedAt"`
+	Status           Status           `json:"status"`
+	Message          *string          `json:"message"`
+	Breakdown        Breakdown        `json:"breakdown"`
+	APICost          APICost          `json:"apiCost"`
+	APICostBreakdown APICostBreakdown `json:"apiCostBreakdown"`
 }
 
 func SessionsDir() string {
@@ -97,6 +99,7 @@ func (i *Index) Scan(now time.Time, rebuild bool) Snapshot {
 		snapshot.Message = &message
 	}
 	snapshot.Breakdown = daily.breakdown()
+	snapshot.APICost, snapshot.APICostBreakdown = daily.cost.estimate(daily.incomplete)
 	return snapshot
 }
 

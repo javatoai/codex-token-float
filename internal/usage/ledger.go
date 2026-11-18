@@ -14,10 +14,19 @@ type fileSummary struct {
 
 func summarizeSession(records []logRecord) *fileSummary {
 	summary := &fileSummary{}
+	models := make(map[string]string)
 	var forked bool
 	for _, record := range records {
 		if record.kind == sessionMeta && summary.threadID == "" {
 			summary.threadID, forked = record.threadID, record.forked
+		}
+		if record.kind == turnContext {
+			if previous, exists := models[record.turnID]; !exists {
+				models[record.turnID] = record.model
+			} else if previous != record.model {
+				// Conflicting contexts cannot identify a unique model for the turn.
+				models[record.turnID] = ""
+			}
 		}
 		summary.structured = summary.structured || record.kind == responseUsage
 	}
@@ -25,6 +34,7 @@ func summarizeSession(records []logRecord) *fileSummary {
 		for _, record := range records {
 			if record.kind == responseUsage &&
 				(summary.threadID == "" || record.threadID == "" || record.threadID == summary.threadID) {
+				record.model = models[record.turnID]
 				summary.responses = append(summary.responses, record)
 			}
 		}
@@ -48,7 +58,7 @@ func summarizeSession(records []logRecord) *fileSummary {
 		case *current.Total < *previous.Total:
 			daily.incomplete = true
 		default:
-			daily.addUsage(current.difference(previous))
+			daily.addUsage(current.difference(previous), "")
 		}
 		if summary.legacy == nil {
 			summary.legacy = make(map[string]tally)
@@ -98,7 +108,7 @@ func indexDays(files map[string]session) map[string]tally {
 	for _, record := range responses {
 		day := record.day()
 		daily := days[day]
-		daily.addUsage(record.usage)
+		daily.addUsage(record.usage, record.model)
 		days[day] = daily
 	}
 	for key, file := range legacy {

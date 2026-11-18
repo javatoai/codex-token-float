@@ -51,9 +51,10 @@ type tally struct {
 	details    [detailCount]uint64
 	missing    [detailCount]bool
 	incomplete bool
+	cost       costTally
 }
 
-func (t *tally) addUsage(usage tokenUsage) {
+func (t *tally) addUsage(usage tokenUsage, model string) {
 	if usage.Total == nil {
 		t.incomplete = true
 		return
@@ -63,6 +64,7 @@ func (t *tally) addUsage(usage tokenUsage) {
 	}
 	t.tokens = saturatingAdd(t.tokens, *usage.Total)
 	t.events = saturatingAdd(t.events, 1)
+	t.cost.addUsage(usage, model)
 
 	fields := [detailCount]*uint64{
 		input: usage.Input, cachedInput: usage.CachedInput, cacheWriteInput: usage.CacheWriteInput,
@@ -87,6 +89,7 @@ func (t *tally) add(other tally) {
 	t.tokens = saturatingAdd(t.tokens, other.tokens)
 	t.events = saturatingAdd(t.events, other.events)
 	t.incomplete = t.incomplete || other.incomplete
+	t.cost.add(other.cost)
 	for field, value := range other.details {
 		t.details[field] = saturatingAdd(t.details[field], value)
 		t.missing[field] = t.missing[field] || other.missing[field]
