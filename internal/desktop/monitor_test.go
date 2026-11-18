@@ -36,8 +36,10 @@ func TestMonitorAppliesRefreshIntervalAndManualRebuild(t *testing.T) {
 		defer cancel()
 		intervals := make(chan time.Duration, 1)
 		refresh := make(chan struct{}, 1)
+		app := &counterWindow{settings: defaultSettings()}
 		var snapshots []usage.Snapshot
 		go monitor(ctx, root, defaultSettings().interval(), intervals, refresh, func(snapshot usage.Snapshot) {
+			app.setSnapshot(snapshot, time.Now(), true)
 			snapshots = append(snapshots, snapshot)
 		})
 		check := func(scans int, tokens string) {
@@ -53,7 +55,8 @@ func TestMonitorAppliesRefreshIntervalAndManualRebuild(t *testing.T) {
 		time.Sleep(time.Second)
 		check(2, "10")
 
-		intervals <- 5 * time.Second
+		app.settings.RefreshSeconds = 5
+		intervals <- app.settings.interval()
 		check(2, "10")
 		time.Sleep(4 * time.Second)
 		check(2, "10")
@@ -61,10 +64,18 @@ func TestMonitorAppliesRefreshIntervalAndManualRebuild(t *testing.T) {
 		writeUsage(20)
 		refresh <- struct{}{}
 		check(3, "20")
+		manual := app.animation
+		if value, moving := manual.valueAt(time.Now().Add(7500 * time.Millisecond)); value != 15 || !moving || manual.duration != 15*time.Second {
+			t.Fatalf("manual refresh did not start the adaptive animation: %+v, midpoint %d (moving %v)", manual, value, moving)
+		}
 		time.Sleep(time.Second)
 		check(4, "20")
+		if app.animation != manual {
+			t.Fatal("an automatic refresh with the same total restarted the animation")
+		}
 
-		intervals <- time.Second
+		app.settings.RefreshSeconds = 1
+		intervals <- app.settings.interval()
 		check(4, "20")
 		time.Sleep(time.Second)
 		check(5, "20")

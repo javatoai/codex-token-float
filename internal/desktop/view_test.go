@@ -3,6 +3,7 @@ package desktop
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/javatoai/codex-token-float/internal/usage"
@@ -146,19 +147,21 @@ func TestDetailViewsAnimateWhenTotalIsUnchanged(t *testing.T) {
 				t.Fatal("a detail-only update must request animation frames")
 			}
 
-			preview.Advance(countDuration / 2)
+			duration := app.detailAnimations[detailInput].duration
+			carry := duration * 9 / 10
+			preview.Advance(carry)
 			preview.Frame()
-			for _, value := range []string{"1,0005", "8070", "1935", "340", "4170", "2335", "1835", "2,0000", "缓存命中率 80.64%"} {
+			for _, value := range []string{"1,0008", "8072", "1936", "344", "4172", "2336", "1836", "2,0000", "缓存命中率 80.64%"} {
 				if !preview.HasText(value) {
-					t.Errorf("missing midpoint text %q", value)
+					t.Errorf("missing animated text %q", value)
 				}
 			}
-			midpoint, ok := preview.Find("1,0005")
-			if delta := midpoint.X + midpoint.W - input.X - input.W; !ok || delta < -0.5 || delta > 0.5 {
-				t.Errorf("input count moved its right edge on carry: before %+v, during %+v", input, midpoint)
+			carried, ok := preview.Find("1,0008")
+			if delta := carried.X + carried.W - input.X - input.W; !ok || delta < -0.5 || delta > 0.5 {
+				t.Errorf("input count moved its right edge on carry: before %+v, during %+v", input, carried)
 			}
 
-			preview.Advance(countDuration / 2)
+			preview.Advance(duration - carry)
 			preview.Frame()
 			for _, value := range []string{"1,0020", "8080", "1940", "360", "4180", "2340", "1840"} {
 				if !preview.HasText(value) {
@@ -191,6 +194,41 @@ func TestDetailViewsAnimateWhenTotalIsUnchanged(t *testing.T) {
 			preview.SetSize(app.detailSize())
 			if !preview.HasText("$1.86") || !preview.HasText("$1.25") {
 				t.Fatalf("the current amounts should reappear when enabled: %v", preview.Texts())
+			}
+		})
+	}
+}
+
+func TestTokenViewsRollTogetherOverTheAdaptiveDuration(t *testing.T) {
+	for _, layout := range []string{"card", "compact", "flyout"} {
+		t.Run(layout, func(t *testing.T) {
+			const day = "2026-11-05"
+			before := countSnapshot(day, 10_000)
+			before.Breakdown.InputTokens = new("9000")
+			after := countSnapshot(day, 50_000)
+			after.Breakdown.InputTokens = new("45000")
+			app := &counterWindow{snapshot: before, cardView: layout == "card", settings: defaultSettings()}
+			app.settings.RefreshSeconds = 5
+			width, height := app.windowSize()
+			view := app.render
+			if layout == "flyout" {
+				width, height = app.detailSize()
+				view = app.renderDetails
+			}
+			preview := ui.NewTester(view, width, height)
+			app.setSnapshot(after, preview.Now(), true)
+			preview.Advance(3750 * time.Millisecond)
+			preview.Frame()
+			if !preview.HasText("2,0000") || !preview.FramePending() {
+				t.Fatalf("total should still be rolling after 3.75 seconds: %v", preview.Texts())
+			}
+			if layout != "compact" && !preview.HasText("1,8000") {
+				t.Fatalf("input count should use the same progress as the total: %v", preview.Texts())
+			}
+			preview.Advance(11250 * time.Millisecond)
+			preview.Frame()
+			if !preview.HasText("5,0000") || preview.FramePending() {
+				t.Fatalf("total should settle at the target after fifteen seconds: %v", preview.Texts())
 			}
 		})
 	}

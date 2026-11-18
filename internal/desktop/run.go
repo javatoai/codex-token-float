@@ -33,6 +33,7 @@ type counterWindow struct {
 	snapshot         usage.Snapshot
 	animation        countAnimation
 	detailAnimations [detailCount]countAnimation
+	countPace        countPace
 	cardView         bool
 	tapDetails       bool
 	wantDetails      bool
@@ -258,16 +259,16 @@ func (app *counterWindow) changeSettings(change func(*desktopSettings)) {
 		oldWidth, oldHeight := app.detailSize()
 		app.settings = next
 		if next.RefreshSeconds != previous.RefreshSeconds {
+			interval := next.interval()
+			app.retimeAnimations(time.Now(), interval)
 			// A newer choice supersedes an interval queued during a scan.
 			select {
 			case <-app.intervalChanges:
 			default:
 			}
-			app.intervalChanges <- next.interval()
+			app.intervalChanges <- interval
 		}
-		if next.ShowUSD != previous.ShowUSD {
-			app.updateDetails(oldWidth, oldHeight)
-		}
+		app.updateDetails(oldWidth, oldHeight)
 	})
 }
 

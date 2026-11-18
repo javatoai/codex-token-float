@@ -4,8 +4,8 @@ Codex Token Float 是一个桌面悬浮计数器。使用 Codex 时，抬眼就�
 
 ## 下载与打开
 
-- **Windows x64** 下载便携版 `.exe`，双击即可打开。 [下载 Windows 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.0/Codex-Token-Float-0.3.0-windows-x64.exe)
-- **macOS 13 或更新版本** Apple 芯片和 Intel 芯片使用同一个 `.dmg`。打开后把「Codex Token Float」拖到「应用程序」。 [下载 Mac 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.0/Codex-Token-Float-0.3.0-macos-universal.dmg)
+- **Windows x64** 下载便携版 `.exe`，双击即可打开。 [下载 Windows 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.1/Codex-Token-Float-0.3.1-windows-x64.exe)
+- **macOS 13 或更新版本** Apple 芯片和 Intel 芯片使用同一个 `.dmg`。打开后把「Codex Token Float」拖到「应用程序」。 [下载 Mac 版](https://github.com/javatoai/codex-token-float/releases/download/v0.3.1/Codex-Token-Float-0.3.1-macos-universal.dmg)
 
 ## 日常使用
 
@@ -27,4 +27,4 @@ Codex Token Float 是一个桌面悬浮计数器。使用 Codex 时，抬眼就�
 | 输出总量 | 分别列出推理和非推理输出。 |
 | 缓存命中率 | 命中缓存的 Token 占输入总量的比例，保留两位小数。 |
 
-用量按北京时间划分，默认每两秒检查一次并显示美元金额。有新的用量记录时，数字会平滑递增。统计在本机完成，记录有缺口时会在明细中提示。
+用量按北京时间划分，默认每两秒检查一次并显示美元金额。选择每 5 秒刷新时，新增 Token 用 15 秒递增展示。滚动中又读到新增用量时，数字会先短暂提速，再留出 15 秒缓慢追平。统计在本机完成，记录有缺口时会在明细中提示。
